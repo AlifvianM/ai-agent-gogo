@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 
 from api.conversations.models import conversation, message, MessageTypeEnum
-from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, ChatModelResponse
+from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse
 from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory
 from api.conversations.entities import ConversationEntities, MessageEntities
 from api.chatbot.repositories import ChatBotRepositories
@@ -13,7 +13,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_core.messages import AIMessage
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 
 from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -23,6 +23,8 @@ from sqlalchemy.sql import text
 from sqlalchemy.exc import ProgrammingError
 
 NOW = datetime.now()
+
+PARSER = PydanticOutputParser(pydantic_object=TicketInformationResponse)
 
 class ChatBotAI:
     def __init__(
@@ -167,68 +169,17 @@ Text: {text}
             message=query_embeddings
         )
         context = "\n\n".join([doc.document for doc in results])
-#         prompt_template = """
-# Anda adalah expert SQL developer yang akan mengkonversi pertanyaan bahasa natural ke SQL query. Kamu akan menggunakan PostgreSQL untuk melakakukan task ini
 
-# TANGGAL HARI INI: {current_date}
+        structured_output_prompt ="""
+You are a data extraction expert. Always output valid JSON. Extract ticket information from the user's query.
 
-# SCHEMA DATABASE:
-# {context}
+{format_instructions}
 
-# Informasi Terkait Skema:
+CRITICAL: Output ONLY valid JSON. No other text.
 
-# Table: flight_prices
-# id: ID unik untuk setiap row
-# flight_number: nomor penerbangan yang dikombinasikan dengan huruf. contoh GA123
-# "class": tipe kelas dari penerbangan tsb
-# base_price: harga sebelum dikenakan pajak
-# tax: nominal besar pajak
-# fee: biaya admin yang dikenakan
-# currency: mata uang yang dipakai
-# valid_from: waktu awal tersedia 
-# valid_to: waktu akhir tersedia atau kadaluarsanya
-# created_at: kapan data diubuat
-# updated_at: kapan data diubah
-# origin_code: kode penanda tempat pemberangkatan
-# destination_code: kode penanda tempat tujuan
-
-# Table: airports 
-# code: kode 3 huruf yang menandakan suatu bandara
-# name: nama bandara
-# city: kota dimana bandara berada
-# country: negara dimana bandara berada
-# timezone: waktu setempat bandara
-# created_at: data dibuat
-# updated_at: data diubah
-
-# ATURAN PENTING:
-# 1. Gunakan HANYA tabel dan kolom yang ada di schema
-# 2. Pastikan sintaks PostgreSQL yang benar  
-# 3. Gunakan JOIN yang tepat untuk relasi antar tabel
-# 4. Untuk agregasi, gunakan GROUP BY yang sesuai
-# 5.ketika user bertanya mengenai ketersedian pada tanggal tertentu, gunakan kolom valid_from dengan inputan sesuai dengan jadwal yang diminta user dan valid_to hingga satu bulan kedepan contoh:
-# - untuk informasi waktu saat ini, gunakan tanggal hari ini yaitu {current_date}
-# - jika user menyebutkan tanggal saja, gunakan {current_date} sebagai acuan tahun dan bulan
-# - jika user tidak menyebutkan tanggal, berikan informasi tiket yang valid_from lebih besar atau sama dengan {current_date}
-# 6. Gunakan alias tabel untuk kemudahan baca (contoh: u untuk users, p untuk products, o untuk orders, oi untuk order_items)
-# 7. Return HANYA SQL query tanpa penjelasan tambahan, tanda markdown, tanpa awalan "JAWABAN:", "answer:", "query:", "sql:", etc. HANYA BERIKAN RAW QUERY.
-# 8. Berikan Query yang terbaik dan pastikan dapat dijalankan ketika mengeksekusi query. Kamu bisa memberikan detail query supaya dapat memberikan informasi lebih kepada user mengenai apa yang dia cari.
-
-# EXAMPLES:
-# Q: Tampilkan semua TIKET
-# A: SELECT * FROM flight_prices;
-
-# Q: Tampilkan tiket dari CGK ke DPS
-# A: SELECT fp.flight_number, fp.class, fp.base_price, fp.tax, fp.fee, fp.currency, fp.valid_from, fp.valid_to, fp.origin_code, fp.destination_code, a1.name AS origin_name, a2.name AS destination_name FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_code = a1.code INNER JOIN airports a2 ON fp.destination_code = a2.code WHERE fp.origin_code = 'CGK' AND fp.destination_code = 'DPS';
-
-# Q: Apakah ada jadwal pesawat dari CGK ke DPS pada tanggal 7 Agustus?
-# A: SELECT fp.flight_number, fp.class, fp.base_price, fp.tax, fp.fee, fp.currency, fp.valid_from, fp.valid_to, fp.origin_code, fp.destination_code, a1.name AS origin_name, a2.name AS destination_name FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_code = a1.code INNER JOIN airports a2 ON fp.destination_code = a2.code WHERE fp.origin_code = 'CGK' AND fp.destination_code = 'DPS' AND fp.valid_from >= '2025-08-07' AND valid_to <= '2025-09-07';
-
-# Q: Apakah ada jadwal pesawat dari Jakarta ke Bali pada tanggal 7 Agustus?
-# A: SELECT fp.flight_number, fp.class, fp.base_price, fp.tax, fp.fee, fp.currency, fp.valid_from, fp.valid_to, fp.origin_code, fp.destination_code, a1.name AS origin_name, a2.name AS destination_name FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_code = a1.code INNER JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07' AND valid_to <= '2025-09-07';
-
-# Now generate SQL for the user's question below.
-# """
+EXAMPLE:
+{{"date": "2025-08-07", "origin": "Jakarta", "destination": "Bali", "amount": "150.00 USD", "ticket_type": "economy"}}
+"""
 
         understanding_prompt = """
 Kamu adalah SQL analyst assistant. Tugasmu adalah memahami pertanyaan user dan context sebelumnya.
@@ -292,11 +243,17 @@ Intent: Cari semua penerbangan
 Output: SELECT * FROM flight_prices;
 
 Intent: Cari penerbangan Jakarta-Bali tanggal 7 Agustus
-Output: SELECT fp.* FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_code = a1.code INNER JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07' AND valid_to <= '2025-09-07';
+Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07';
 
 Intent: Cari penerbangan Jakarta-Bali dengan harga termurah
-Output: SELECT fp.* FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_code = a1.code INNER JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
+Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
 """
+        # === Prepare Template ===
+        structured_output_prompt_ = ChatPromptTemplate.from_messages([
+            ("system",structured_output_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human","{question}")
+        ])
 
         understanding_prompt_ = ChatPromptTemplate.from_messages([
             ("system",understanding_prompt),
@@ -316,14 +273,44 @@ Output: SELECT fp.* FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_co
         )
         print("Success Get History")
         
-        # === ✅ Load messages ke cache sebelum invoke ===
+        # === Load messages ke cache sebelum invoke ===
         await history.aget_messages()
         print("Success Load Message History")
 
         def get_session_history(session_id: str):
             """Harus return instance yang sama"""
             return history
+        
+        # === Cek Informasi dari User ===
+        information_chain = structured_output_prompt_ | self.model | PARSER
+        
+        information_chain_ = RunnableWithMessageHistory(
+            information_chain,
+            get_session_history=get_session_history,
+            input_messages_key="question",
+            history_messages_key="history",
+        )
+        information_chain_output = await information_chain_.ainvoke({
+            "question":self.params.message,
+            "format_instructions":PARSER.get_format_instructions()
+        }, config={"configurable": {"session_id": self.params.conversation_id}})
+        print(f"🎟 Ticket Information: {information_chain_output}")
 
+        if (information_chain_output.date == "" or information_chain_output.origin == "" or information_chain_output.destination == "" ):
+            extracted_response = await self.extract_ticket_information(
+                session_history=get_session_history,
+                information=information_chain_output
+            )
+            await history.aadd_message(AIMessage(content=extracted_response), conversation_id=self.conversation_id)
+            print(f"Response: {extracted_response}")
+            return MessageDataResponse(
+                conversation_id=self.conversation_id,
+                content=extracted_response,
+                token_usage={},
+                created_at=datetime.now()
+        )
+
+        # === Create Query Intent Sebelum Eksekusi SQL ===
         chain = understanding_prompt_ | self.llm | StrOutputParser()
         understanding_chain = RunnableWithMessageHistory(
             chain,
@@ -351,8 +338,7 @@ Output: SELECT fp.* FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_co
         
         # Chain 2: Generate SQL tanpa memory (pure generation)
         print("Generating SQL...")
-        sql_chain = sql_prompt_ | self.model | StrOutputParser()
-        
+        sql_chain = sql_prompt_ | self.llm | StrOutputParser()
         raw_sql = await sql_chain.ainvoke({
             "intent": intent,
             "context": context
@@ -367,28 +353,15 @@ Output: SELECT fp.* FROM flight_prices fp INNER JOIN airports a1 ON fp.origin_co
             raise ValueError(f"Invalid SQL generated: {raw_sql}")
         
         print(f"✅ Clean SQL: {clean_sql}")
-        
-        # Simpan SQL ke memory (optional, untuk tracking)
-        # await history.aadd_message(AIMessage(content=f"[SQL Generated for: {question}]"))
-
-        # # Generate SQL using LLM
-        # formatted_prompt = prompt.format(context=context, question=self.params.message, current_date=NOW.strftime("%Y-%m-%d"))
-        # sql_query = self.llm(formatted_prompt).strip()
-        
-        # # Clean up the response
-        # if sql_query.startswith("```sql"):
-        #     sql_query = sql_query[6:]
-        # if sql_query.endswith("```"):
-        #     sql_query = sql_query[:-3]
 
         try:
             # Execute SQL query
             results = await self.execute_query(conn=conn, sql_query=clean_sql)
             print("Success executing SQL")
 
-            # Language Detection
-            language = await self.language_detection()
-            print("Success collect Language")
+            # # Language Detection
+            # language = await self.language_detection()
+            # print("Success collect Language")
 
             # Report Agent
             report = await self.report_agent(question=self.params.message, result_query=results, conn=conn)
@@ -450,6 +423,61 @@ error message: {error_message}
             return result.mappings().fetchall()
         except Exception as e:
             raise e
+        
+    async def extract_ticket_information(
+            self,
+            session_history,
+            information: TicketInformationResponse
+    ):
+        frontline_prompt = """
+Kamu adalah seorang teller penjualan tiket pesawat. 
+Tugasmu adalah menyambut pelanggan, memahami kebutuhan mereka, dan menanyakan informasi yang belum lengkap dengan cara yang ramah dan alami.
+
+Kamu akan menerima data terstruktur hasil ekstraksi dari input pengguna dalam format:
+
+{{"date": "<string>","origin": "<string>","destination": "<string>","amount": <integer>,"ticket_type": "<string>"}}
+
+Instruksi utama:
+
+1. Gunakan data terstruktur tersebut sebagai niat dan kebutuhan pelanggan.
+2. Berbicaralah seperti teller tiket pesawat yang sopan, hangat, dan membantu.
+3. Jika ada informasi yang belum lengkap (tanggal, jumlah tiket, lokasi keberangkatan, tujuan, atau jenis tiket), tanyakan dengan sopan dan natural.
+4. Jangan pernah menampilkan atau menyebutkan JSON tersebut kepada pengguna.
+5. Jangan mengarang informasi yang tidak diberikan pengguna — lebih baik bertanya.
+6. Jika semua informasi sudah lengkap, katakan bahwa kamu akan membantu mencarikan tiket terbaik.
+7. Jawaban harus pendek, jelas, dan terasa seperti percakapan langsung.
+
+Panduan bertanya:
+- Jika “amount” kosong atau 0 → “Untuk berapa orang tiket yang Anda butuhkan?”
+- Jika “date” kosong → “Kapan tanggal keberangkatannya?”
+- Jika “origin” kosong → “Dari kota mana Anda akan berangkat?”
+- Jika “destination” kosong → “Tujuan penerbangannya ke mana?”
+- Jika semuanya lengkap → “Baik, saya akan bantu mencarikan tiket yang sesuai untuk Anda.”
+
+Output kamu **hanya** berupa respon teller tersebut, bukan JSON.
+
+Data terstruktur:
+{ticket_data}
+"""
+        teller_prompt = ChatPromptTemplate.from_messages([
+            ("system",frontline_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human","{ticket_data}")
+        ])
+
+        chain = teller_prompt | self.model | StrOutputParser()
+        teller_chain = RunnableWithMessageHistory(
+            chain,
+            get_session_history=session_history,
+            input_messages_key="question",
+            history_messages_key="history",
+        )
+
+        response = await teller_chain.ainvoke({
+            "ticket_data": information.json()
+        }, config={"configurable": {"session_id": self.params.conversation_id}})
+        return response
+
 
     async def report_agent(
             self,

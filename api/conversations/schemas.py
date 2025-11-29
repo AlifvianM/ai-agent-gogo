@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.conversations.entities import ConversationEntities
 from api.conversations.helpers import generate_uuid, generate_time_now
@@ -65,3 +65,11 @@ class ChatModelResponse(BaseModel):
 
 class ChatModelErrorResponse(BaseModel):
     message: str
+
+class TicketInformationResponse(BaseModel):
+    """Simplified schema tanpa alias"""
+    date: str = Field("", description="Date of the trip in YYYY-MM-DD format")
+    origin: str = Field("", description="Departure location")  # ✅ Changed from 'from_'
+    destination: str = Field("", description="Destination location")
+    amount: int = Field(description="Amount paid for the ticket", default=1)
+    ticket_type: str = Field(description="Type of the ticket, e.g., business, economy", default="all")
