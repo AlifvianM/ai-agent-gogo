@@ -4,7 +4,7 @@ from datetime import datetime
 
 from api.conversations.models import conversation, message, MessageTypeEnum
 from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse
-from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory
+from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory, ConversationStateRepository, ConversationState
 from api.conversations.entities import ConversationEntities, MessageEntities
 from api.chatbot.repositories import ChatBotRepositories
 
@@ -129,6 +129,15 @@ Text: {text}
             await ConversationRepository().create_conversation(conn=conn, payload=payload)
             self.conversation_id = payload.id
             created_by = payload.created_by
+
+            #create conversation IDLE state 
+            await ConversationStateRepository().set_conversation_state(
+                conn=conn, 
+                conversation_id=self.conversation_id,
+                state=ConversationState.IDLE,
+                created_by=created_by
+            )
+
         else:
             data = await ConversationRepository().get_conversation_by_id(
                 conn=conn, 
@@ -148,7 +157,21 @@ Text: {text}
 
                 self.conversation_id = self.params.conversation_id
                 created_by = payload.created_by
-        
+
+                #create conversation IDLE state 
+                await ConversationStateRepository().set_conversation_state(
+                    conn=conn, 
+                    conversation_id=self.conversation_id,
+                    state=ConversationState.IDLE,
+                    created_by=created_by
+                )
+
+        # get current state
+        current_state = await ConversationStateRepository().get_latest_conversation_state(
+            conn=conn, 
+            conversation_id=self.conversation_id
+        )
+
         # create message from user
         message_payload = CreateMessageRequest(
             conversation_id=self.conversation_id,
@@ -160,258 +183,316 @@ Text: {text}
         ).transform()
         await MessageRepository().create_message(conn=conn, payload=message_payload)
 
-        query_embeddings = OpenAIEmbeddings().embed_query(
-                self.params.message
+        if current_state.value in ['idle', 'searching']:
+            # proceed to search
+
+            query_embeddings = OpenAIEmbeddings().embed_query(
+                    self.params.message
+                )
+                
+            results = await ChatBotRepositories().search_similiar_embeddings(
+                conn=conn,
+                message=query_embeddings
+            )
+            context = "\n\n".join([doc.document for doc in results])
+
+            structured_output_prompt ="""
+    You are a data extraction expert. Always output valid JSON. Extract ticket information from the user's query.
+
+    {format_instructions}
+
+    CRITICAL: Output ONLY valid JSON. No other text.
+
+    EXAMPLE:
+    {{"date": "2025-08-07", "origin": "Jakarta", "destination": "Bali", "amount": "150.00 USD", "ticket_type": "economy"}}
+    """
+
+            understanding_prompt = """
+    Kamu adalah SQL analyst assistant. Tugasmu adalah memahami pertanyaan user dan context sebelumnya.
+
+    TANGGAL HARI INI: {current_date}
+
+    DATABASE SCHEMA:
+    {context}
+
+    INFORMASI TABEL:
+    Table: flight_prices
+    id: ID unik untuk setiap row
+    flight_number: nomor penerbangan yang dikombinasikan dengan huruf. contoh GA123
+    "class": tipe kelas dari penerbangan tsb
+    base_price: harga sebelum dikenakan pajak
+    tax: nominal besar pajak
+    fee: biaya admin yang dikenakan
+    currency: mata uang yang dipakai
+    valid_from: waktu awal tersedia 
+    valid_to: waktu akhir tersedia atau kadaluarsanya
+    created_at: kapan data diubuat
+    updated_at: kapan data diubah
+    origin_code: kode penanda tempat pemberangkatan
+    destination_code: kode penanda tempat tujuan
+
+    Table: airports 
+    code: kode 3 huruf yang menandakan suatu bandara
+    name: nama bandara
+    city: kota dimana bandara berada
+    country: negara dimana bandara berada
+    timezone: waktu setempat bandara
+    created_at: data dibuat
+    updated_at: data diubah
+
+    Tugasmu:
+    1. Jika user bertanya follow-up (seperti "yang paling murah?", "berapa harganya?"), identifikasi apa yang dimaksud dari percakapan sebelumnya
+    2. Reformulasi pertanyaan menjadi pertanyaan lengkap yang bisa dijawab dengan SQL
+    3. Output harus dalam format: "QUERY_INTENT: [penjelasan singkat apa yang harus di-query]"
+
+    Contoh:
+    User sebelumnya tanya: "Ada penerbangan Jakarta-Bali tanggal 7 Agustus?"
+    User sekarang tanya: "Yang paling murah?"
+    Output: "QUERY_INTENT: Cari penerbangan Jakarta-Bali tanggal 7 Agustus dengan harga paling murah"
+    """
+
+            sql_prompt = """
+    Kamu adalah expert SQL generator. Generate ONLY valid PostgreSQL query.
+
+    DATABASE SCHEMA:
+    {context}
+
+    ATURAN KRITIS:
+    1. Return HANYA SQL query
+    2. Mulai langsung dengan SELECT
+    3. TIDAK BOLEH ada teks lain, prefix, atau penjelasan
+    4. TIDAK BOLEH ada "AI:", "answer:", "jawaban:", atau apapun
+    5. TIDAK BOLEH ada markdown atau code blocks
+
+    EXAMPLES:
+    Intent: Cari semua penerbangan
+    Output: SELECT * FROM flight_prices;
+
+    Intent: Cari penerbangan Jakarta-Bali tanggal 7 Agustus
+    Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07';
+
+    Intent: Cari penerbangan Jakarta-Bali dengan harga termurah
+    Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
+    """
+            # === Prepare Template ===
+            structured_output_prompt_ = ChatPromptTemplate.from_messages([
+                ("system",structured_output_prompt),
+                MessagesPlaceholder(variable_name="history"),
+                ("human","{question}")
+            ])
+
+            understanding_prompt_ = ChatPromptTemplate.from_messages([
+                ("system",understanding_prompt),
+                MessagesPlaceholder(variable_name="history"),
+                ("human","{question}")
+            ])
+
+            sql_prompt_ = ChatPromptTemplate.from_messages([
+                ("system",sql_prompt),
+                ("human", "Intent: {intent}\n\nGenerate SQL:")
+            ])
+
+            # === ✅ Buat instance history di luar agar bisa di-load dulu ===
+            history = InMemoryChatMessageHistory(
+                conn=conn, 
+                conversation_id=self.conversation_id
+            )
+            print("Success Get History")
+            
+            # === Load messages ke cache sebelum invoke ===
+            await history.aget_messages()
+            print("Success Load Message History")
+
+            def get_session_history(session_id: str):
+                """Harus return instance yang sama"""
+                return history
+            
+            # === Cek Informasi dari User ===
+            information_chain = structured_output_prompt_ | self.model | PARSER
+            
+            information_chain_ = RunnableWithMessageHistory(
+                information_chain,
+                get_session_history=get_session_history,
+                input_messages_key="question",
+                history_messages_key="history",
+            )
+            information_chain_output = await information_chain_.ainvoke({
+                "question":self.params.message,
+                "format_instructions":PARSER.get_format_instructions()
+            }, config={"configurable": {"session_id": self.params.conversation_id}})
+            print(f"🎟 Ticket Information: {information_chain_output}")
+
+
+            ### CHECK SCHEMA IF NULL
+            if (information_chain_output.date == "" or information_chain_output.origin == "" or information_chain_output.destination == "" ):
+                extracted_response = await self.extract_ticket_information(
+                    session_history=get_session_history,
+                    information=information_chain_output
+                )
+                await history.aadd_message(AIMessage(content=extracted_response), conversation_id=self.conversation_id)
+                print(f"Response: {extracted_response}")
+
+                #create conversation SEARCHING state 
+                await ConversationStateRepository().set_conversation_state(
+                    conn=conn, 
+                    conversation_id=self.conversation_id,
+                    state=ConversationState.SEARCHING,
+                    created_by=created_by
+                )
+
+                return MessageDataResponse(
+                    conversation_id=self.conversation_id,
+                    content=extracted_response,
+                    token_usage={},
+                    created_at=datetime.now()
+                )
+            else:
+                #create conversation SEARCHING state 
+                await ConversationStateRepository().set_conversation_state(
+                    conn=conn, 
+                    conversation_id=self.conversation_id,
+                    state=ConversationState.SELECTING,
+                    created_by=created_by
+                )
+            
+
+            # === Create Query Intent Sebelum Eksekusi SQL ===
+            chain = understanding_prompt_ | self.llm | StrOutputParser()
+            understanding_chain = RunnableWithMessageHistory(
+                chain,
+                get_session_history=get_session_history,
+                input_messages_key="question",
+                history_messages_key="history",
             )
             
-        results = await ChatBotRepositories().search_similiar_embeddings(
-            conn=conn,
-            message=query_embeddings
-        )
-        context = "\n\n".join([doc.document for doc in results])
-
-        structured_output_prompt ="""
-You are a data extraction expert. Always output valid JSON. Extract ticket information from the user's query.
-
-{format_instructions}
-
-CRITICAL: Output ONLY valid JSON. No other text.
-
-EXAMPLE:
-{{"date": "2025-08-07", "origin": "Jakarta", "destination": "Bali", "amount": "150.00 USD", "ticket_type": "economy"}}
-"""
-
-        understanding_prompt = """
-Kamu adalah SQL analyst assistant. Tugasmu adalah memahami pertanyaan user dan context sebelumnya.
-
-TANGGAL HARI INI: {current_date}
-
-DATABASE SCHEMA:
-{context}
-
-INFORMASI TABEL:
-Table: flight_prices
-id: ID unik untuk setiap row
-flight_number: nomor penerbangan yang dikombinasikan dengan huruf. contoh GA123
-"class": tipe kelas dari penerbangan tsb
-base_price: harga sebelum dikenakan pajak
-tax: nominal besar pajak
-fee: biaya admin yang dikenakan
-currency: mata uang yang dipakai
-valid_from: waktu awal tersedia 
-valid_to: waktu akhir tersedia atau kadaluarsanya
-created_at: kapan data diubuat
-updated_at: kapan data diubah
-origin_code: kode penanda tempat pemberangkatan
-destination_code: kode penanda tempat tujuan
-
-Table: airports 
-code: kode 3 huruf yang menandakan suatu bandara
-name: nama bandara
-city: kota dimana bandara berada
-country: negara dimana bandara berada
-timezone: waktu setempat bandara
-created_at: data dibuat
-updated_at: data diubah
-
-Tugasmu:
-1. Jika user bertanya follow-up (seperti "yang paling murah?", "berapa harganya?"), identifikasi apa yang dimaksud dari percakapan sebelumnya
-2. Reformulasi pertanyaan menjadi pertanyaan lengkap yang bisa dijawab dengan SQL
-3. Output harus dalam format: "QUERY_INTENT: [penjelasan singkat apa yang harus di-query]"
-
-Contoh:
-User sebelumnya tanya: "Ada penerbangan Jakarta-Bali tanggal 7 Agustus?"
-User sekarang tanya: "Yang paling murah?"
-Output: "QUERY_INTENT: Cari penerbangan Jakarta-Bali tanggal 7 Agustus dengan harga paling murah"
-"""
-
-        sql_prompt = """
-Kamu adalah expert SQL generator. Generate ONLY valid PostgreSQL query.
-
-DATABASE SCHEMA:
-{context}
-
-ATURAN KRITIS:
-1. Return HANYA SQL query
-2. Mulai langsung dengan SELECT
-3. TIDAK BOLEH ada teks lain, prefix, atau penjelasan
-4. TIDAK BOLEH ada "AI:", "answer:", "jawaban:", atau apapun
-5. TIDAK BOLEH ada markdown atau code blocks
-
-EXAMPLES:
-Intent: Cari semua penerbangan
-Output: SELECT * FROM flight_prices;
-
-Intent: Cari penerbangan Jakarta-Bali tanggal 7 Agustus
-Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07';
-
-Intent: Cari penerbangan Jakarta-Bali dengan harga termurah
-Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
-"""
-        # === Prepare Template ===
-        structured_output_prompt_ = ChatPromptTemplate.from_messages([
-            ("system",structured_output_prompt),
-            MessagesPlaceholder(variable_name="history"),
-            ("human","{question}")
-        ])
-
-        understanding_prompt_ = ChatPromptTemplate.from_messages([
-            ("system",understanding_prompt),
-            MessagesPlaceholder(variable_name="history"),
-            ("human","{question}")
-        ])
-
-        sql_prompt_ = ChatPromptTemplate.from_messages([
-            ("system",sql_prompt),
-            ("human", "Intent: {intent}\n\nGenerate SQL:")
-        ])
-
-        # === ✅ Buat instance history di luar agar bisa di-load dulu ===
-        history = InMemoryChatMessageHistory(
-            conn=conn, 
-            conversation_id=self.conversation_id
-        )
-        print("Success Get History")
-        
-        # === Load messages ke cache sebelum invoke ===
-        await history.aget_messages()
-        print("Success Load Message History")
-
-        def get_session_history(session_id: str):
-            """Harus return instance yang sama"""
-            return history
-        
-        # === Cek Informasi dari User ===
-        information_chain = structured_output_prompt_ | self.model | PARSER
-        
-        information_chain_ = RunnableWithMessageHistory(
-            information_chain,
-            get_session_history=get_session_history,
-            input_messages_key="question",
-            history_messages_key="history",
-        )
-        information_chain_output = await information_chain_.ainvoke({
-            "question":self.params.message,
-            "format_instructions":PARSER.get_format_instructions()
-        }, config={"configurable": {"session_id": self.params.conversation_id}})
-        print(f"🎟 Ticket Information: {information_chain_output}")
-
-        if (information_chain_output.date == "" or information_chain_output.origin == "" or information_chain_output.destination == "" ):
-            extracted_response = await self.extract_ticket_information(
-                session_history=get_session_history,
-                information=information_chain_output
+            intent_output = await understanding_chain.ainvoke(
+                {
+                    "question": self.params.message,
+                    "context": context,
+                    "current_date": NOW.strftime("%Y-%m-%d")
+                },
+                config={"configurable": {"session_id": self.params.conversation_id}}
             )
-            await history.aadd_message(AIMessage(content=extracted_response), conversation_id=self.conversation_id)
-            print(f"Response: {extracted_response}")
-            return MessageDataResponse(
-                conversation_id=self.conversation_id,
-                content=extracted_response,
-                token_usage={},
-                created_at=datetime.now()
-        )
+            
+            print(f"🧠 Intent: {intent_output}")
+            
+            # Extract intent
+            if "QUERY_INTENT:" in intent_output:
+                intent = intent_output.split("QUERY_INTENT:")[1].strip()
+            else:
+                intent = intent_output
+            
+            # Chain 2: Generate SQL tanpa memory (pure generation)
+            print("Generating SQL...")
+            sql_chain = sql_prompt_ | self.llm | StrOutputParser()
+            raw_sql = await sql_chain.ainvoke({
+                "intent": intent,
+                "context": context
+            })
+            
+            print(f"🔍 Raw SQL: {raw_sql}")
+            
+            # Clean and validate
+            clean_sql = await self.clean_sql(raw_sql)
+            
+            if not self.validate_sql_output(clean_sql):
+                raise ValueError(f"Invalid SQL generated: {raw_sql}")
+            
+            print(f"✅ Clean SQL: {clean_sql}")
 
-        # === Create Query Intent Sebelum Eksekusi SQL ===
-        chain = understanding_prompt_ | self.llm | StrOutputParser()
-        understanding_chain = RunnableWithMessageHistory(
-            chain,
-            get_session_history=get_session_history,
-            input_messages_key="question",
-            history_messages_key="history",
-        )
-        
-        intent_output = await understanding_chain.ainvoke(
-            {
-                "question": self.params.message,
-                "context": context,
-                "current_date": NOW.strftime("%Y-%m-%d")
-            },
-            config={"configurable": {"session_id": self.params.conversation_id}}
-        )
-        
-        print(f"🧠 Intent: {intent_output}")
-        
-        # Extract intent
-        if "QUERY_INTENT:" in intent_output:
-            intent = intent_output.split("QUERY_INTENT:")[1].strip()
-        else:
-            intent = intent_output
-        
-        # Chain 2: Generate SQL tanpa memory (pure generation)
-        print("Generating SQL...")
-        sql_chain = sql_prompt_ | self.llm | StrOutputParser()
-        raw_sql = await sql_chain.ainvoke({
-            "intent": intent,
-            "context": context
-        })
-        
-        print(f"🔍 Raw SQL: {raw_sql}")
-        
-        # Clean and validate
-        clean_sql = await self.clean_sql(raw_sql)
-        
-        if not self.validate_sql_output(clean_sql):
-            raise ValueError(f"Invalid SQL generated: {raw_sql}")
-        
-        print(f"✅ Clean SQL: {clean_sql}")
+            try:
+                # Execute SQL query
+                results = await self.execute_query(conn=conn, sql_query=clean_sql)
+                print("Success executing SQL")
 
-        try:
-            # Execute SQL query
-            results = await self.execute_query(conn=conn, sql_query=clean_sql)
-            print("Success executing SQL")
+                # # Language Detection
+                # language = await self.language_detection()
+                # print("Success collect Language")
 
-            # # Language Detection
-            # language = await self.language_detection()
-            # print("Success collect Language")
+                # Report Agent
+                report = await self.report_agent(question=self.params.message, result_query=results, conn=conn)
+                print(f"REPORT: {report}")
+                return report
+            
+            except ProgrammingError as e:
+                await conn.rollback() 
+                print("---------ERROR---------")
+                str_error = str(e)
 
-            # Report Agent
-            report = await self.report_agent(question=self.params.message, result_query=results, conn=conn)
-            print(f"REPORT: {report}")
-            return report
-        
-        except ProgrammingError as e:
-            await conn.rollback() 
-            print("---------ERROR---------")
-            str_error = str(e)
+                prompt_template = """
+    Kamu adalah data analyst yang ahli yang dimana kamu bekerja untuk suatu pelayanan penerbangan. Kamu akan diberikan suatu error log dan pertanyaan dari user.
+    Berikan informasi kepada user mengapa kesalahan dapat terjadi. Bisa jadi user bertanya diluar batas pengetahuanmu.
 
-            prompt_template = """
-Kamu adalah data analyst yang ahli yang dimana kamu bekerja untuk suatu pelayanan penerbangan. Kamu akan diberikan suatu error log dan pertanyaan dari user.
-Berikan informasi kepada user mengapa kesalahan dapat terjadi. Bisa jadi user bertanya diluar batas pengetahuanmu.
+    contoh:
+    question: siapa presiden singapura
+    answer: maaf kami tidak mengetahui jawaban mengenai permintaan anda. silahkan bertanya seputar tiket dan penerbangan yang kamu mau tahu ya.
 
-contoh:
-question: siapa presiden singapura
-answer: maaf kami tidak mengetahui jawaban mengenai permintaan anda. silahkan bertanya seputar tiket dan penerbangan yang kamu mau tahu ya.
+    INSTRUKSI:
+    1. JAWAB pertanyaan user secara LANGSUNG. Kamu boleh memodifikasi jawaban dengan lebih natural dan enak dibaca oleh user
+
+    question: {question}
+    error message: {error_message}
+                """
+
+                prompt = PromptTemplate(
+                    template=prompt_template,
+                    input_variables=["question", "error_message"]
+                )
+                formatted_prompt = prompt.format(question=self.params.message, error_message=str_error)
+                report = self.model.invoke(formatted_prompt)
+                
+                message_payload = CreateMessageRequest(
+                    conversation_id=self.conversation_id,
+                    content=report.content,
+                    message_type=MessageTypeEnum.answer,
+                    token_usage={},
+                    created_by=created_by,
+                    metadata={}
+
+                ).transform()
+                await MessageRepository().create_message(conn=conn, payload=message_payload)
+
+                return MessageDataResponse(
+                    content=report.content,
+                    token_usage=report.response_metadata.get("token_usage", {}),
+                    created_at=datetime.now()
+                )
+            
+        elif current_state.value == 'selecting':
+            print("NOW SELECTING TICKET!")
+            pass
+    
+    async def confirm_ticket(
+            self,
+            conn: AsyncConnection,
+        ):
+
+        confirming_prompt = """
+Kamu adalah seorang teller penjualan tiket pesawat. Anda adalah asisten pelaporan yang ramah dan menarik yang bekerja untuk perusahaan penerbangan. 
+Tugas Anda adalah mengonfirmasi apakah customer sudah memilih tiket yang sesuai atau tidak.
 
 INSTRUKSI:
-1. JAWAB pertanyaan user secara LANGSUNG. Kamu boleh memodifikasi jawaban dengan lebih natural dan enak dibaca oleh user
+1. Anda hanya perlu menjawab True atau False ketika customer telah memberikan tanggapannya
 
-question: {question}
-error message: {error_message}
-            """
+CONTOH:
+Question: Baik saya memilih tiket tersebut 
+Answer: True
 
-            prompt = PromptTemplate(
-                template=prompt_template,
-                input_variables=["question", "error_message"]
-            )
-            formatted_prompt = prompt.format(question=self.params.message, error_message=str_error)
-            report = self.model.invoke(formatted_prompt)
-            
-            message_payload = CreateMessageRequest(
-                conversation_id=self.conversation_id,
-                content=report.content,
-                message_type=MessageTypeEnum.answer,
-                token_usage={},
-                created_by=created_by,
-                metadata={}
+Question: Sepertinya saya akan memilih jalur lainnya
+Answer: False
+"""
+        confirming_prompt_ = ChatPromptTemplate.from_messages([
+            ("system",confirming_prompt),
+            ("human", "Question: {question}\n\nGenerate SQL:")
+        ])
 
-            ).transform()
-            await MessageRepository().create_message(conn=conn, payload=message_payload)
+        confirming_chain = confirming_prompt_ | self.llm | StrOutputParser()
+        raw_sql = await confirming_chain.ainvoke({
+            "intent": self.params.message,
+        })
+        print(f"🔍 Raw Confirming: {raw_sql}")
+        import pdb; pdb.set_trace()
 
-            return MessageDataResponse(
-                content=report.content,
-                token_usage=report.response_metadata.get("token_usage", {}),
-                created_at=datetime.now()
-            )
-    
     async def execute_query(
         self,
         conn: AsyncConnection,
@@ -478,7 +559,6 @@ Data terstruktur:
         }, config={"configurable": {"session_id": self.params.conversation_id}})
         return response
 
-
     async def report_agent(
             self,
             question: str,
@@ -486,7 +566,7 @@ Data terstruktur:
             result_query: list
     ):
         prompt_template = """
-Anda adalah asisten pelaporan yang ramah dan menarik yang bekerja untuk perusahaan penerbangan.Tugas Anda adalah mengubah hasil mentah menjadi penjelasan yang lancar, alami, dan sedikit playful yang mendorong pengguna untuk menjelajahi lebih lanjut.
+Kamu adalah seorang teller penjualan tiket pesawat. Anda adalah asisten pelaporan yang ramah dan menarik yang bekerja untuk perusahaan penerbangan. Tugas Anda adalah mengubah hasil mentah menjadi penjelasan yang lancar, alami, dan sedikit playful yang mendorong pengguna untuk menjelajahi lebih lanjut.
 
 PERTANYAAN PENGGUNA:
 {question}

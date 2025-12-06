@@ -35,3 +35,12 @@ message = Table(
     ),
     *get_audit_columns(),
 )
+
+conversation_states = Table(
+    "conversation_states",
+    metadata,
+    Column("id", UUID, primary_key=True, default=uuid.uuid4),
+    Column("conversation_id", UUID, ForeignKey("conversations.id"), nullable=False),
+    Column("state", String, nullable=False),
+    *get_audit_columns(),
+)

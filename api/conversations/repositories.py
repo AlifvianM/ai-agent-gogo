@@ -1,15 +1,27 @@
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 
+from enum import Enum
 from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import RowMapping, select, func, cast, insert, desc, String, delete
 from sqlalchemy.sql.operators import eq
 
 from api.conversations.interface import ConversationInterFace, MessageInterFace
-from api.conversations.models import conversation, message, MessageTypeEnum
+from api.conversations.models import conversation, message, MessageTypeEnum, conversation_states
 from api.conversations.entities import ConversationEntities, MessageEntities
 from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, ChatModelResponse
+
+
+class ConversationState(str, Enum):
+    IDLE = "idle"
+    SEARCHING = "searching"
+    SELECTING = "selecting"
+    CONFIRMING = "confirming"
+    BOOKING = "booking"
+    COMPLETED = "completed"
+    COMPLETED_WITH_NO_TICKET = "completed_with_no_ticket"
+
 
 class ConversationRepository(ConversationInterFace):
     async def create_conversation(self, conn: AsyncConnection, payload: ConversationEntities):
@@ -165,3 +177,43 @@ class InMemoryChatMessageHistory(BaseChatMessageHistory):
     def clear(self):
         """Fallback sinkron jika diperlukan"""
         self._messages_cache = []
+
+class ConversationStateRepository:
+    async def set_conversation_state(
+            self, 
+            conn: AsyncConnection, 
+            conversation_id: str, 
+            state: ConversationState,
+            created_by: str
+        ):
+
+        # Masukkan state baru
+        try:
+            insert_stmt = insert(conversation_states).values(
+                conversation_id=conversation_id,
+                state=state.value,
+                created_by=created_by
+            )
+            await conn.execute(statement=insert_stmt)
+            await conn.commit()
+        except Exception as e:
+            raise e
+
+    async def get_latest_conversation_state(
+            self, 
+            conn: AsyncConnection, 
+            conversation_id: str
+        ) -> ConversationState | None:
+        try:
+            stmt = (
+                select(conversation_states.c.state)
+                .where(conversation_states.c.conversation_id == conversation_id)
+                .order_by(desc(conversation_states.c.created_at))
+            )
+            result = await conn.execute(statement=stmt)
+            row = result.mappings().first()
+            if row:
+                return ConversationState(row.state)
+            return None
+        except Exception as e:
+            raise e
