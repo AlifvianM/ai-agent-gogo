@@ -73,3 +73,8 @@ class TicketInformationResponse(BaseModel):
     destination: str = Field("", description="Destination location")
     amount: int = Field(description="Amount paid for the ticket", default=1)
     ticket_type: str = Field(description="Type of the ticket, e.g., business, economy", default="all")
+
+class TicketConfirmationResponse(BaseModel):
+    """Schema for ticket confirmation response"""
+    ticket_id: str = Field("", description="Unique identifier for the ticket")
+    confirmed: bool = Field(False, description="Indicates if the ticket is confirmed")
