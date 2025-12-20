@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 
 from api.conversations.models import conversation, message, MessageTypeEnum
-from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse
+from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse, TicketConfirmationResponse
 from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory, ConversationStateRepository, ConversationState
 from api.conversations.entities import ConversationEntities, MessageEntities
 from api.chatbot.repositories import ChatBotRepositories
@@ -25,6 +25,7 @@ from sqlalchemy.exc import ProgrammingError
 NOW = datetime.now()
 
 PARSER = PydanticOutputParser(pydantic_object=TicketInformationResponse)
+TICKET_PARSER = PydanticOutputParser(pydantic_object=TicketConfirmationResponse)
 
 class ChatBotAI:
     def __init__(
@@ -460,8 +461,74 @@ Text: {text}
             
         elif current_state.value == 'selecting':
             print("NOW SELECTING TICKET!")
-            pass
-    
+            
+            confirming_response = await self.confirm_ticket(
+                conn=conn,
+            )
+            print(f"CONFIRMING RESPONSE: {confirming_response}")
+
+            extract_response = await self.extract_confirmed_ticket(confirming_response=confirming_response, conn=conn)
+
+            if extract_response.confirmed:
+                # save to booking table
+                booking_payload = {
+                    "ticket_id": extract_response.ticket_id,
+                    "confirmed": "true",
+                    "user_id": created_by,
+                    "created_at": datetime.now(),
+                    "updated_at": datetime.now()
+                }
+                await conn.execute(
+                    insert("bookings_test").values(booking_payload)
+                )
+                await conn.commit()
+
+                #create conversation IDLE state 
+                await ConversationStateRepository().set_conversation_state(
+                    conn=conn, 
+                    conversation_id=self.conversation_id,
+                    state=ConversationState.IDLE,
+                    created_by=created_by
+                )
+
+                response_text = f"Terima kasih telah memilih tiket dengan ID {extract_response.ticket_id}. Tiket Anda telah dikonfirmasi."
+                message_payload = CreateMessageRequest(
+                    conversation_id=self.conversation_id,
+                    content=response_text,
+                    message_type=MessageTypeEnum.answer,
+                    token_usage={},
+                    created_by=created_by,
+                    metadata={}
+                ).transform()
+                await MessageRepository().create_message(conn=conn, payload=message_payload)
+
+                return MessageDataResponse(
+                    conversation_id=self.conversation_id,
+                    content=response_text,
+                    token_usage={},
+                    created_at=datetime.now()
+                )
+            else:
+                response_text = "Baik, silakan beri tahu saya jika Anda ingin mencari tiket lain atau mengubah preferensi Anda."
+                message_payload = CreateMessageRequest(
+                    conversation_id=self.conversation_id,
+                    content=response_text,
+                    message_type=MessageTypeEnum.answer,
+                    token_usage={},
+                    created_by=created_by,
+                    metadata={}
+                ).transform()
+                await MessageRepository().create_message(conn=conn, payload=message_payload)
+
+                return MessageDataResponse(
+                    conversation_id=self.conversation_id,
+                    content=response_text,
+                    token_usage={},
+                    created_at=datetime.now()
+                )
+
+            import pdb;pdb.set_trace()
+
     async def confirm_ticket(
             self,
             conn: AsyncConnection,
@@ -472,26 +539,106 @@ Kamu adalah seorang teller penjualan tiket pesawat. Anda adalah asisten pelapora
 Tugas Anda adalah mengonfirmasi apakah customer sudah memilih tiket yang sesuai atau tidak.
 
 INSTRUKSI:
-1. Anda hanya perlu menjawab True atau False ketika customer telah memberikan tanggapannya
+1. Gunakan data terstruktur tersebut sebagai niat dan kebutuhan pelanggan.
+2. Berbicaralah seperti teller tiket pesawat yang sopan, hangat, dan membantu.
+3. Jangan pernah menampilkan atau menyebutkan JSON tersebut kepada pengguna.
+4. Jawaban harus pendek, jelas, dan terasa seperti percakapan langsung.
+5. Berikan informasi ID penerbangan setiap kali customer telah yakin memilih penerbangannya. Ingat, ini sifat nya WAJIB!
 
-CONTOH:
-Question: Baik saya memilih tiket tersebut 
-Answer: True
+EXAMPLE:
+question: Saya sudah pilih tiket dengan ID TICKET12345, tolong proses ya
+answer: Terima kasih telah memilih tiket dengan ID TICKET12345. Saya akan segera memprosesnya untuk Anda.
 
-Question: Sepertinya saya akan memilih jalur lainnya
-Answer: False
+question: Saya belum yakin dengan tiketnya, tolong carikan lagi
+answer: Tentu, saya mengerti. Bisa tolong beritahu saya apa yang ingin Anda ubah atau cari lagi?
+
+question: Kalau begitu saya memilih tiket termurah saja
+answer: Baik, tiket dengan ID TICKET67890 adalah tiket termurah yang tersedia untuk Anda. Saya akan segera memprosesnya.
+
+question: {question}
 """
         confirming_prompt_ = ChatPromptTemplate.from_messages([
             ("system",confirming_prompt),
-            ("human", "Question: {question}\n\nGenerate SQL:")
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{question}")
         ])
 
-        confirming_chain = confirming_prompt_ | self.llm | StrOutputParser()
-        raw_sql = await confirming_chain.ainvoke({
-            "intent": self.params.message,
-        })
-        print(f"🔍 Raw Confirming: {raw_sql}")
-        import pdb; pdb.set_trace()
+        def get_session_history(session_id: str):
+            """Harus return instance yang sama"""
+            return history
+
+        history = InMemoryChatMessageHistory(
+                conn=conn, 
+                conversation_id=self.conversation_id
+        )
+        print("Success Get History")
+
+        confirming_chain = confirming_prompt_ | self.model | StrOutputParser()
+        confirming_chain_ = RunnableWithMessageHistory(
+                confirming_chain,
+                get_session_history=get_session_history,
+                input_messages_key="question",
+                history_messages_key="history",
+            )
+        confirming_chain_output = await confirming_chain_.ainvoke({
+                "question":self.params.message,
+                # "format_instructions":TICKET_PARSER.get_format_instructions()
+            }, config={"configurable": {"session_id": self.params.conversation_id}})
+        print(f"🎟 Confirming Text: {confirming_chain_output}")
+
+        await history.aadd_message(AIMessage(content=confirming_chain_output), conversation_id=self.conversation_id)
+        return confirming_chain_output
+
+    
+    async def extract_confirmed_ticket(
+        self,
+        conn: AsyncConnection,
+        confirming_response: str
+    ):
+        confirmed_ticket_prompt ="""
+You are a data extraction expert. Always output valid JSON. Extract ticket information from the user's query. 
+In this case you need to get ticket id from a reponse and put it into ticket_id key.
+
+{format_instructions}
+
+CRITICAL: Output ONLY valid JSON. No other text.
+
+EXAMPLE:
+response: Baik, saya akan memproses tiket dengan ID GA123 sebagai tiket termurah yang tersedia untuk Anda. Total harga tiket adalah $185. Saya akan segera melanjutkan prosesnya untuk Anda!
+json: {{"ticket_id": "TICKET12345", "confirmed": "true"}}
+
+response: Tentu, saya mengerti. Apa yang ingin Anda ubah atau cari lagi? Apakah Anda mencari pilihan harga yang berbeda, waktu penerbangan lainnya, atau kelas yang berbeda? Saya siap membantu!
+json: {{"ticket_id": "", "confirmed": "false"}}
+"""
+        confirmed_ticket_prompt_ = ChatPromptTemplate.from_messages([
+            ("system",confirmed_ticket_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{response}")
+        ])
+
+        def get_session_history(session_id: str):
+            """Harus return instance yang sama"""
+            return history
+
+        history = InMemoryChatMessageHistory(
+                conn=conn, 
+                conversation_id=self.conversation_id
+        )
+        print("Success Get History")
+
+        confirming_chain = confirmed_ticket_prompt_ | self.model | TICKET_PARSER
+        confirming_chain_ = RunnableWithMessageHistory(
+                confirming_chain,
+                get_session_history=get_session_history,
+                input_messages_key="response",
+                history_messages_key="history",
+            )
+        confirming_chain_output = await confirming_chain_.ainvoke({
+                "response":confirming_response,
+                "format_instructions":TICKET_PARSER.get_format_instructions()
+            }, config={"configurable": {"session_id": self.params.conversation_id}})
+        print(f"🎟 EXTRACTED TICKET ID: {confirming_chain_output}")
+        return confirming_chain_output
 
     async def execute_query(
         self,

@@ -44,3 +44,13 @@ conversation_states = Table(
     Column("state", String, nullable=False),
     *get_audit_columns(),
 )
+
+booking_test = Table(
+    "bookings_test",
+    metadata,
+    Column("id", UUID, primary_key=True, default=uuid.uuid4),
+    Column("ticket_id", String(length=50), nullable=False),
+    Column("confirmed", String, nullable=False, default="false"),
+    Column("user_id", String(), nullable=False, default="Test User"),
+    *get_audit_columns(),
+)
