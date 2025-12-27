@@ -106,4 +106,3 @@ def downgrade() -> None:
     op.drop_column('flight_prices', 'destination_code')
     op.drop_column('flight_prices', 'origin_code')
     op.execute("DROP TYPE IF EXISTS message_type_enum;")
-    op.drop_table('airports')
