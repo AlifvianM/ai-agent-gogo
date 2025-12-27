@@ -44,6 +44,7 @@ def upgrade() -> None:
         
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_table("conversation")
+    op.drop_constraint("fk_message_conversation", "messages", type_="foreignkey")
+    op.drop_table("conversations")
     op.drop_table("messages")
 
