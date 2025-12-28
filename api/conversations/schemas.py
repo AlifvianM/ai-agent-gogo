@@ -73,6 +73,8 @@ class TicketInformationResponse(BaseModel):
     destination: str = Field("", description="Destination location")
     amount: int = Field(description="Amount paid for the ticket", default=1)
     ticket_type: str = Field(description="Type of the ticket, e.g., business, economy", default="all")
+    price_min: float = Field(description="Minimum price of the ticket", default=0.0)
+    price_max: float = Field(description="Maximum price of the ticket", default=0.0)
 
 class TicketConfirmationResponse(BaseModel):
     """Schema for ticket confirmation response"""

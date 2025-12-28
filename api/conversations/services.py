@@ -274,6 +274,9 @@ Text: {text}
 
     Intent: Cari penerbangan Jakarta-Bali dengan harga termurah
     Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
+
+    Intent: Cari penerbangan dari Jakarta ke Bali pada tanggal 6 Juli 2025 dengan harga dibawah $200.
+    Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from = '2025-07-06' AND fp.base_price + fp.tax + fp.fee < 200 LIMIT 1;
     """
             # === Prepare Template ===
             structured_output_prompt_ = ChatPromptTemplate.from_messages([
@@ -281,7 +284,7 @@ Text: {text}
                 MessagesPlaceholder(variable_name="history"),
                 ("human","{question}")
             ])
-
+ 
             understanding_prompt_ = ChatPromptTemplate.from_messages([
                 ("system",understanding_prompt),
                 MessagesPlaceholder(variable_name="history"),
@@ -410,6 +413,7 @@ Text: {text}
                 # language = await self.language_detection()
                 # print("Success collect Language")
 
+                import pdb;pdb.set_trace()
                 # Report Agent
                 report = await self.report_agent(question=self.params.message, result_query=results, conn=conn)
                 print(f"REPORT: {report}")
@@ -663,7 +667,7 @@ Tugasmu adalah menyambut pelanggan, memahami kebutuhan mereka, dan menanyakan in
 
 Kamu akan menerima data terstruktur hasil ekstraksi dari input pengguna dalam format:
 
-{{"date": "<string>","origin": "<string>","destination": "<string>","amount": <integer>,"ticket_type": "<string>"}}
+{{"date": "<string>","origin": "<string>","destination": "<string>","amount": <integer>,"ticket_type": "<string>", ""price_min": <float>, "price_max": <float>}}
 
 Instruksi utama:
 
