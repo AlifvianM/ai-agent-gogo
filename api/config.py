@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     CORS_ALLOW_METHODS: str = "*"
     CORS_ALLOW_HEADERS: str = "*"
 
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+
     # # Langchain Settings
     # LANGCHAIN_TRACING_V2: str
     # LANGCHAIN_ENDPOINT: str
