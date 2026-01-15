@@ -3,7 +3,7 @@ from typing import Annotated
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import RowMapping
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 
@@ -38,12 +38,21 @@ class Auth(HTTPBearer):
     def __init__(self):
         super().__init__()
 
-    async def __call__(self, request: Request, db: AsyncConnection = Depends(get_connection)):
+    async def __call__(
+            self, 
+            request: Request, 
+            response: Response = None,
+            db: AsyncConnection = Depends(get_connection)
+        ):
         authorization = request.headers.get("Authorization")
         
         scheme, credentials = get_authorization_scheme_param(authorization)
         if not (scheme and credentials):
-            raise InvalidAuthentication()
+            raise HTTPException(
+                status_code=401,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         
         try:
             token = decode_jwt(credentials)
@@ -53,10 +62,17 @@ class Auth(HTTPBearer):
                 email=token.email
             )
             if user is None:
-                raise InvalidAuthentication()
+                raise HTTPException(
+                    status_code=401,
+                    detail="Could not validate credentials",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
             return user
         except jwt.ExpiredSignatureError:
-            raise TokenExpired(message="Token expired")
+            response.status_code = 401
+            return {
+                "message": "Invalid authentication credentials"
+            }
         # except jwt.InvalidTokenError:
         #     raise TokenInvalid(message="Invalid token")
 
