@@ -27,5 +27,5 @@ COPY . .
 # Expose the port the app runs on
 EXPOSE 8080
 
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Command to run migrations, seed, then start the application
+CMD ["sh", "-c", "alembic upgrade head && python -m scripts.seed_users && uvicorn main:app --host 0.0.0.0 --port 8080"]
