@@ -1,8 +1,14 @@
-from passlib.handlers.pbkdf2 import pbkdf2_sha256
+import bcrypt
 
 def hash_password(password: str) -> str:
-    return pbkdf2_sha256.hash(password)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    return hashed.decode("utf-8")
 
 
 def verify_password(password: str, hashed_password: str) -> bool:
-    return pbkdf2_sha256.verify(password, hashed_password)
+    if not hashed_password:
+        return False
+    return bcrypt.checkpw(
+        password.encode("utf-8"),
+        hashed_password.encode("utf-8"),
+    )
