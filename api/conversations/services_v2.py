@@ -4,16 +4,15 @@ from api.conversations.models import conversation, message, MessageTypeEnum
 from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse, TicketConfirmationResponse
 from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory, ConversationStateRepository, ConversationState
 from api.conversations.entities import ConversationEntities, MessageEntities
+from api.conversations.tools.tools import create_rag_tool, generate_sql_tool, create_sql_executor, create_bookings
 from api.chatbot.repositories import ChatBotRepositories
+
 
 from langchain.agents import create_openai_functions_agent, AgentExecutor
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_core.messages import AIMessage
-
-
-from api.conversations.tools.tools import create_rag_tool, generate_sql_tool, create_sql_executor
 
 
 SYSTEM_PROMPT = """"
@@ -24,7 +23,8 @@ Tugasmu:
 2. Jika butuh konteks → panggil tool rag_tool.
 3. Jika butuh SQL → panggil tool generate_sql.
 4. Eksekusi SQL → panggil tool execute_sql.
-5. Berikan jawaban akhir dengan bahasa Indonesia yang jelas dan ramah.
+5. Jika user ingin memesan atau mengonfirmasi tiket yang telah dipilih → panggil tool create_booking.
+6. Berikan jawaban akhir dengan bahasa Indonesia yang jelas dan ramah.
 
 JANGAN generate SQL secara manual di sistem prompt.
 Gunakan tools.
@@ -51,7 +51,8 @@ class FlightSearchAgent:
         tools = [
             create_rag_tool(self.conn),
             generate_sql_tool(self.model),
-            create_sql_executor(self.conn)
+            create_sql_executor(self.conn),
+            create_bookings(self.conn)
         ]
 
         prompt = ChatPromptTemplate.from_messages([

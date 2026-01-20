@@ -1,7 +1,7 @@
 import uuid
 from enum import StrEnum
 
-from sqlalchemy import Table, Column, String, Numeric, Date, UUID, ForeignKey, ForeignKeyConstraint, Text, Enum
+from sqlalchemy import Table, Column, String, Numeric, Date, UUID, ForeignKey, ForeignKeyConstraint, Text, Enum, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 
 from sqlalchemy.sql import func
@@ -50,7 +50,7 @@ booking_test = Table(
     metadata,
     Column("id", UUID, primary_key=True, default=uuid.uuid4),
     Column("ticket_id", String(length=50), nullable=False),
-    Column("confirmed", String, nullable=False, default="false"),
+    Column("confirmed", Boolean, nullable=False, default=False),
     Column("user_id", String(), nullable=False, default="Test User"),
     *get_audit_columns(),
 )

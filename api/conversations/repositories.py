@@ -8,8 +8,9 @@ from sqlalchemy import RowMapping, select, func, cast, insert, desc, String, del
 from sqlalchemy.sql.operators import eq
 
 from api.conversations.interface import ConversationInterFace, MessageInterFace
-from api.conversations.models import conversation, message, MessageTypeEnum, conversation_states
-from api.conversations.entities import ConversationEntities, MessageEntities
+from api.conversations.models import conversation, message, MessageTypeEnum, conversation_states, booking_test
+from api.flights.models import flight_price
+from api.conversations.entities import ConversationEntities, MessageEntities, BookingEntities
 from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, ChatModelResponse
 
 
@@ -215,5 +216,26 @@ class ConversationStateRepository:
             if row:
                 return ConversationState(row.state)
             return None
+        except Exception as e:
+            raise e
+        
+class BookingRepository:
+    async def create_booking(self, conn: AsyncConnection, payload: BookingEntities):
+        stmt = insert(booking_test).values(**payload.model_dump(exclude_unset=True)).returning(booking_test.c.id)
+        try:
+            await conn.execute(statement=stmt)
+            await conn.commit()
+        except Exception as e:
+            raise e
+        return payload
+
+    async def get_ticket_by_id(self, conn: AsyncConnection, flight_number: str):
+        stmt = (
+            select(flight_price)
+            .where(flight_price.c.flight_number == flight_number)
+        )
+        try:
+            result = await conn.execute(statement=stmt)
+            return result.mappings().first()
         except Exception as e:
             raise e
