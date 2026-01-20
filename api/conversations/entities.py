@@ -26,3 +26,17 @@ class ConversationsFilter(BaseModel):
     limit: int = 10
     offset: int = 0
     search: str | None = None
+
+class BookingEntities(AuditBaseModel):
+    id: UUID | None = None
+    # conversation_id: UUID | None = None
+    # user_name: str | None = None
+    # flight_number: str | None = None
+    # class_type: str | None = None
+    # booking_date: str | None = None
+    # created_by: str | None = None
+
+    ticket_id: str | None = None
+    confirmed: bool | None = None
+    user_id: str | None = None
+    created_by: str | None = None

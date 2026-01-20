@@ -20,10 +20,10 @@ flight_price = Table(
     Column("valid_to", Date, nullable=False),
     
     # Kolom baru dengan foreign key
-    Column("origin", String(3), ForeignKey('airports.code'), nullable=False),
-    Column("destination", String(3), ForeignKey('airports.code'), nullable=False),
+    Column("origin_code", String(3), ForeignKey('airports.code'), nullable=False),
+    Column("destination_code", String(3), ForeignKey('airports.code'), nullable=False),
     
-    *get_audit_columns()
+    # *get_audit_columns()
 )
 
 airports = Table(

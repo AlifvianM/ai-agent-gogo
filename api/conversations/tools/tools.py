@@ -1,14 +1,19 @@
 import json
+from datetime import datetime
+from typing import Any
 from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain.tools import StructuredTool
-from pydantic import BaseModel
 
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
 
 from api.chatbot.repositories import ChatBotRepositories
+from api.conversations.repositories import BookingRepository
+from api.conversations.schemas import BookingRequest
 
 
 class RAGInput(BaseModel):
@@ -20,6 +25,9 @@ class SQLGenInput(BaseModel):
 
 class SQLExecInput(BaseModel):
     sql_query: str
+
+class BookingInput(BaseModel):
+    flight_number: str
 
 
 def create_rag_tool(conn):
@@ -44,9 +52,6 @@ def generate_sql_tool(llm):
     def generate_sql(question: str, context: str) -> str:
         prompt = f"""
 Kamu adalah ahli SQL untuk database penerbangan.
-
-Gunakan context berikut (jika relevance):
-{context}
 
 Berdasarkan pertanyaan berikut:
 "{question}"
@@ -128,4 +133,41 @@ def create_sql_executor(conn):
         func=execute,
         coroutine=execute,
         args_schema=SQLExecInput
+    )
+
+def create_bookings(
+    conn: AsyncConnection,
+):
+    async def booking_tool(flight_number: str) -> str:
+        # Implement booking logic here
+        data = await BookingRepository().get_ticket_by_id(conn, flight_number)
+        print("DEBUG - Booking data:", data)
+        if not data:
+            return json.dumps(
+                {
+                    "status": "Invalid", 
+                    "message": f"Tiket dengan ID {flight_number} tidak ditemukan."
+                }
+            )
+        else:
+            await BookingRepository().create_booking(
+                conn=conn, 
+                payload=BookingRequest(
+                    ticket_id=data["id"],
+                    user_id="test-id-3281233",
+                    created_by="agent",
+                ).transform()
+            )
+            return json.dumps(
+                {
+                    "status": "Success", 
+                    "message": f"Tiket dengan ID {flight_number} berhasil dibooking."
+                }
+            )
+    return StructuredTool.from_function(
+        name="create_booking",
+        description="Create a booking for a flight ticket using the ticket ID.",
+        func=booking_tool,
+        coroutine=booking_tool,
+        args_schema=BookingInput
     )
