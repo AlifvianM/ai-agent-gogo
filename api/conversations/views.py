@@ -39,7 +39,7 @@ async def chat_v2(
     token: AnyAuthenticatedUser,
     params: APIMessageParams
 ):
-    bot = await ChatBotAIV2(conn=db, params=params).build()
+    bot = await ChatBotAIV2(conn=db, params=params, user=token).build()
     try:
         result = await bot.run()
     except HTTPException as ex:

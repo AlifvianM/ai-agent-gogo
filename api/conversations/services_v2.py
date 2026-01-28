@@ -1,5 +1,7 @@
 from datetime import datetime
+from sqlalchemy.engine.row import RowMapping
 
+from api.database.database import DBConnection
 from api.conversations.models import conversation, message, MessageTypeEnum
 from api.conversations.schemas import APIMessageParams, CreateConversationRequest, CreateMessageRequest, MessageDataResponse, TicketInformationResponse, TicketConfirmationResponse
 from api.conversations.repositories import ConversationRepository, MessageRepository, InMemoryChatMessageHistory, ConversationStateRepository, ConversationState
@@ -26,19 +28,22 @@ Tugasmu:
 5. Jika user ingin memesan atau mengonfirmasi tiket yang telah dipilih → panggil tool create_booking.
 6. Berikan jawaban akhir dengan bahasa Indonesia yang jelas dan ramah.
 
-JANGAN generate SQL secara manual di sistem prompt.
+Aturan Penting:
+- JANGAN generate SQL secara manual di sistem prompt.
+- Berikan juga ID tiket ketika akan menampilkan informasi tiket.
 Gunakan tools.
 """
 
 class FlightSearchAgent:
 
-    def __init__(self, conn, params):
+    def __init__(self, conn: DBConnection, params: APIMessageParams, user: RowMapping):
         self.conn = conn
         self.model = init_chat_model(
             model="gpt-4o-mini",
             temperature=0,
             stream_usage=True
         )
+        self.user = user
 
         # agent + executor akan di-set saat build()
         self.agent = None
@@ -52,7 +57,7 @@ class FlightSearchAgent:
             create_rag_tool(self.conn),
             generate_sql_tool(self.model),
             create_sql_executor(self.conn),
-            create_bookings(self.conn)
+            create_bookings(self.conn, self.user)
         ]
 
         prompt = ChatPromptTemplate.from_messages([
@@ -82,7 +87,7 @@ class FlightSearchAgent:
         if self.params.conversation_id == "":
             payload = CreateConversationRequest(
                 title=self.params.message,
-                created_by="user",
+                created_by=self.user.get("username", "anonymous"),
             ).transform()
             await ConversationRepository().create_conversation(conn=self.conn, payload=payload)
             self.conversation_id = payload.id

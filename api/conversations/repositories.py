@@ -229,10 +229,10 @@ class BookingRepository:
             raise e
         return payload
 
-    async def get_ticket_by_id(self, conn: AsyncConnection, flight_number: str):
+    async def get_ticket_by_id(self, conn: AsyncConnection, ticket_id: str):
         stmt = (
             select(flight_price)
-            .where(flight_price.c.flight_number == flight_number)
+            .where(flight_price.c.id == ticket_id)
         )
         try:
             result = await conn.execute(statement=stmt)

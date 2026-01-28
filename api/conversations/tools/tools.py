@@ -9,6 +9,7 @@ from langchain.tools import StructuredTool
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.engine.row import RowMapping
 from sqlalchemy import text
 
 from api.chatbot.repositories import ChatBotRepositories
@@ -27,7 +28,7 @@ class SQLExecInput(BaseModel):
     sql_query: str
 
 class BookingInput(BaseModel):
-    flight_number: str
+    ticket_id: str
 
 
 def create_rag_tool(conn):
@@ -94,13 +95,64 @@ Question: Cari semua penerbangan
 Output: SELECT * FROM flight_prices;
 
 Question: Cari penerbangan Jakarta-Bali tanggal 7 Agustus
-Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07';
+Output: SELECT 
+    fp.id as ticket_id,
+	fp."class",
+	fp.base_price,
+	fp.tax,
+	fp.fee,
+	fp.valid_from,
+	fp.valid_to,
+	fp.origin_code,
+	fp.destination_code,
+	a1.name as airport_origin,
+	a1.city as city_origin,
+	a1.country as country_origin,
+	a1.timezone,
+	a2.name as airport_destination,
+	a2.city as city_destination,
+	a2.country as country_destination
+FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from >= '2025-08-07';
 
 Question: Cari penerbangan Jakarta-Bali dengan harga termurah
-Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
+Output: SELECT 
+    fp.id as ticket_id,
+	fp."class",
+	fp.base_price,
+	fp.tax,
+	fp.fee,
+	fp.valid_from,
+	fp.valid_to,
+	fp.origin_code,
+	fp.destination_code,
+	a1.name as airport_origin,
+	a1.city as city_origin,
+	a1.country as country_origin,
+	a1.timezone,
+	a2.name as airport_destination,
+	a2.city as city_destination,
+	a2.country as country_destination
+FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' LIMIT 1;
 
 Question: Cari penerbangan dari Jakarta ke Bali pada tanggal 6 Juli 2025 dengan harga dibawah $200.
-Output: SELECT fp.* FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from = '2025-07-06' AND fp.base_price + fp.tax + fp.fee < 200 LIMIT 1;            
+Output: SELECT 
+    fp.id as ticket_id,
+	fp."class",
+	fp.base_price,
+	fp.tax,
+	fp.fee,
+	fp.valid_from,
+	fp.valid_to,
+	fp.origin_code,
+	fp.destination_code,
+	a1.name as airport_origin,
+	a1.city as city_origin, 
+	a1.country as country_origin, 
+	a1.timezone, 
+	a2.name as airport_destination, 
+	a2.city as city_destination, 
+	a2.country as country_destination
+FROM flight_prices fp LEFT JOIN airports a1 ON fp.origin_code = a1.code LEFT JOIN airports a2 ON fp.destination_code = a2.code WHERE a1.city = 'Jakarta' AND a2.city = 'Denpasar' AND fp.valid_from = '2025-07-06' AND fp.base_price + fp.tax + fp.fee < 200 LIMIT 1;            
 """
         sql = llm.invoke(prompt).content.strip()
         return sql.replace("```sql", "").replace("```", "").strip()
@@ -137,16 +189,19 @@ def create_sql_executor(conn):
 
 def create_bookings(
     conn: AsyncConnection,
+    user: RowMapping
 ):
-    async def booking_tool(flight_number: str) -> str:
+    username = user.get("username", "anonymous")
+    user_id = str(user.get("id", "unknown"))
+    async def booking_tool(ticket_id: str) -> str:
         # Implement booking logic here
-        data = await BookingRepository().get_ticket_by_id(conn, flight_number)
+        data = await BookingRepository().get_ticket_by_id(conn, ticket_id)
         print("DEBUG - Booking data:", data)
         if not data:
             return json.dumps(
                 {
                     "status": "Invalid", 
-                    "message": f"Tiket dengan ID {flight_number} tidak ditemukan."
+                    "message": f"Tiket dengan ID {ticket_id} tidak ditemukan."
                 }
             )
         else:
@@ -154,14 +209,14 @@ def create_bookings(
                 conn=conn, 
                 payload=BookingRequest(
                     ticket_id=data["id"],
-                    user_id="test-id-3281233",
-                    created_by="agent",
+                    user_id=user_id,
+                    created_by=username,
                 ).transform()
             )
             return json.dumps(
                 {
                     "status": "Success", 
-                    "message": f"Tiket dengan ID {flight_number} berhasil dibooking."
+                    "message": f"Tiket dengan ID {ticket_id} berhasil dibooking."
                 }
             )
     return StructuredTool.from_function(
