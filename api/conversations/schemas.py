@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from api.conversations.entities import ConversationEntities
 from api.conversations.helpers import generate_uuid, generate_time_now
 from api.conversations.models import MessageTypeEnum
-from api.conversations.entities import MessageEntities
+from api.conversations.entities import MessageEntities, BookingEntities
 
 
 class APIMessageParams(BaseModel):
@@ -80,3 +80,20 @@ class TicketConfirmationResponse(BaseModel):
     """Schema for ticket confirmation response"""
     ticket_id: str = Field("", description="Unique identifier for the ticket")
     confirmed: bool = Field(False, description="Indicates if the ticket is confirmed")
+
+class BookingRequest(BaseModel):
+    ticket_id: UUID
+    confirmed: bool = False
+    user_id: str
+    created_by: str
+    created_at: datetime | None = None
+
+    def transform(self):
+        return BookingEntities(
+            id=generate_uuid(),
+            ticket_id=str(self.ticket_id),
+            confirmed=False,
+            user_id=self.user_id,
+            created_by=self.created_by,
+            created_at=generate_time_now()
+        )

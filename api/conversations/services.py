@@ -154,7 +154,7 @@ Text: {text}
                     title=self.params.message,
                     created_by=created_by
                 ).transform()
-                await self.__conversation_repo.create_conversation(conn=conn, payload=payload)
+                await ConversationRepository().create_conversation(conn=conn, payload=payload)
 
                 self.conversation_id = self.params.conversation_id
                 created_by = payload.created_by
@@ -413,7 +413,6 @@ Text: {text}
                 # language = await self.language_detection()
                 # print("Success collect Language")
 
-                import pdb;pdb.set_trace()
                 # Report Agent
                 report = await self.report_agent(question=self.params.message, result_query=results, conn=conn)
                 print(f"REPORT: {report}")
@@ -530,8 +529,6 @@ Text: {text}
                     token_usage={},
                     created_at=datetime.now()
                 )
-
-            import pdb;pdb.set_trace()
 
     async def confirm_ticket(
             self,

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 @lru_cache
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".dev.env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     APP_NAME: str
     APP_ENV: str = "local"
@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_METHODS: str = "*"
     CORS_ALLOW_HEADERS: str = "*"
+
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
 
     # # Langchain Settings
     # LANGCHAIN_TRACING_V2: str

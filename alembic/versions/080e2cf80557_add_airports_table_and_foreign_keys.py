@@ -143,5 +143,4 @@ def downgrade():
     #     batch_op.drop_column('origin_code')
     
     # Hapus table airports
-    # op.drop_table('airports')
-    pass
+    op.drop_table('airports')
