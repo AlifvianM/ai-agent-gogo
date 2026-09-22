@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 @lru_cache
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     APP_NAME: str
     APP_ENV: str = "local"
@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     CORS_ALLOW_METHODS: str = "*"
     CORS_ALLOW_HEADERS: str = "*"
 
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+
     # # Langchain Settings
     # LANGCHAIN_TRACING_V2: str
     # LANGCHAIN_ENDPOINT: str
@@ -45,6 +48,14 @@ class Settings(BaseSettings):
     # MINIO_SECURE: bool
     # MINIO_BUCKET: str
 
+    # # # Github Settings
+    # GITHUB_API: str
+
+    # # # Proxy Setting
+    # PROXY_CURL_API: str
+
+    # # # Taviliy Settings
+    # TAVILY_API_KEY: str
     # # Redis
     # REDIS_HOST: str
     # REDIS_PASSWORD: str
